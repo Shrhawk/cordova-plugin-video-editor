@@ -300,6 +300,128 @@
 }
 
 /**
+ * MuteVideo
+ *
+ * Remove audio from given video
+ *
+ * ARGUMENTS
+ * =========
+ * fileUri        - input file path
+ * outputFileName - output file name
+ *
+ * RESPONSE
+ * ========
+ *
+ * outputFilePath - path to output file
+ *
+ * @param CDVInvokedUrlCommand command
+ * @return void
+ */
+- (void) RemoveAudioFromVideo:(CDVInvokedUrlCommand*)command
+{
+    NSLog(@"MuteVideo");
+    NSDictionary* options = [command.arguments objectAtIndex:0];
+    
+    if ([options isKindOfClass:[NSNull class]]) {
+        options = [NSDictionary dictionary];
+    }
+    NSString* inputFilePath = [options objectForKey:@"fileUri"];
+    NSString* outputFileName = [options objectForKey:@"outputFileName"];
+    NSString *cacheDir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) objectAtIndex:0];
+    NSFileManager *fileMgr = [NSFileManager defaultManager];
+    
+    // video Dir
+    NSString *videoDir = [cacheDir stringByAppendingPathComponent:@"mp4"];
+    if ([fileMgr createDirectoryAtPath:videoDir withIntermediateDirectories:YES attributes:nil error: NULL] == NO){
+        [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"failed to create video dir"] callbackId:command.callbackId];
+        return;
+    }
+    NSString *videoOutput = [videoDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.%@", outputName, @"mp4"]];
+    
+    NSLog(@"[MuteVideo]: inputFilePath: %@", inputFilePath);
+    NSLog(@"[MuteVideo]: outputPath: %@", videoOutput);
+    
+     // run in background
+    [self.commandDelegate runInBackground:^{
+    
+        AVMutableComposition *composition = [AVMutableComposition composition];
+        AVURLAsset *avAsset = [AVURLAsset URLAssetWithURL:inputFilePath options:nil];
+        AVAssetExportSession *exportSession = [[AVAssetExportSession alloc]initWithAsset:avAsset presetName: AVAssetExportPresetHighestQuality];
+        exportSession.outputURL = [NSURL fileURLWithPath:videoOutput];
+        exportSession.outputFileType = AVFileTypeQuickTimeMovie;
+        exportSession.shouldOptimizeForNetworkUse = YES;
+
+        AVMutableCompositionTrack *compositionVideoTrack = [composition
+                                                            addMutableTrackWithMediaType:AVMediaTypeVideo
+                                                            preferredTrackID:kCMPersistentTrackID_Invalid];
+        BOOL Done = NO;
+
+        AVAssetTrack * sourceVideoTrack = [[avAsset tracksWithMediaType:AVMediaTypeVideo] objectAtIndex:0];
+
+        CMTimeRange x = CMTimeRangeMake(kCMTimeZero, [avAsset duration]);
+
+        Done = [compositionVideoTrack insertTimeRange:x ofTrack:sourceVideoTrack atTime:kCMTimeZero error:nil];
+
+        //  Set up a semaphore for the completion handler and progress timer
+        dispatch_semaphore_t sessionWaitSemaphore = dispatch_semaphore_create(0);
+
+        void (^completionHandler)(void) = ^(void)
+        {
+            dispatch_semaphore_signal(sessionWaitSemaphore);
+        };
+
+       [exportSession exportAsynchronouslyWithCompletionHandler:completionHandler];
+
+            do {
+                dispatch_time_t dispatchTime = DISPATCH_TIME_FOREVER;  // if we dont want progress, we will wait until it finishes.
+                dispatchTime = getDispatchTimeFromSeconds((float)1.0);
+                double progress = [exportSession progress] * 100;
+
+                NSLog([NSString stringWithFormat:@"AVAssetExport running progress=%3.2f%%", progress]);
+
+                NSMutableDictionary *dictionary = [[NSMutableDictionary alloc] init];
+                [dictionary setValue: [NSNumber numberWithDouble: progress] forKey: @"progress"];
+
+                CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary: dictionary];
+
+                [result setKeepCallbackAsBool:YES];
+                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+                dispatch_semaphore_wait(sessionWaitSemaphore, dispatchTime);
+            } while( [exportSession status] < AVAssetExportSessionStatusCompleted );
+
+            // this is kinda odd but must be done
+            if ([exportSession status] == AVAssetExportSessionStatusCompleted) {
+                NSMutableDictionary *dictionary = [[NSMutableDictionary alloc] init];
+                // AVAssetExportSessionStatusCompleted will not always mean progress is 100 so hard code it below
+                double progress = 100.00;
+                [dictionary setValue: [NSNumber numberWithDouble: progress] forKey: @"progress"];
+
+                CDVPluginResult* result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary: dictionary];
+
+                [result setKeepCallbackAsBool:YES];
+                [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+            }
+
+            switch ([exportSession status]) {
+                case AVAssetExportSessionStatusCompleted:
+                    NSLog(@"[MuteVideo]: Export Complete %d %@", exportSession.status, exportSession.error);
+                    [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsString:videoOutput] callbackId:command.callbackId];
+                    break;
+                case AVAssetExportSessionStatusFailed:
+                    NSLog(@"[MuteVideo]: Export failed: %@", [[exportSession error] localizedDescription]);
+                    [self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:[[exportSession error] localizedDescription]] callbackId:command.callbackId];
+                    break;
+                case AVAssetExportSessionStatusCancelled:
+                    NSLog(@"[MuteVideo]: Export canceled");
+                    break;
+                default:
+                    NSLog(@"[MuteVideo]: Export default in switch");
+                    break;
+            }
+  }];
+}
+
+/**
  * getVideoInfo
  *
  * Creates a thumbnail from the start of a video.
